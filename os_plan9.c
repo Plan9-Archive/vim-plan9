@@ -20,6 +20,7 @@
 #include <draw.h>
 #include <keyboard.h>
 #include <event.h>
+#include <plumb.h>
 #include "vim.h"
 
 /* Vim defines Display.  We need it for libdraw. */
@@ -36,6 +37,11 @@ enum {
     TMODE_BOLD    = 2,
 
     NCOLORS       = 16
+};
+
+enum {
+    // event(2) plumber key
+    Eplumb  = 4,
 };
 
 static int scr_inited;
@@ -624,7 +630,35 @@ static void drain_mouse_events(void) {
     }
 }
 
+/* handle plumb messages to edit port */
+static void
+plumbshow(Plumbmsg *pm)
+{
+    char cmdline[1024];
+    char *addr;
+
+    if(pm == nil)
+	return;
+
+    cmdline[0] = 0;
+
+    /* setup edit cmd buffer */
+    if(pm->ndata > 0) {
+        snprint(cmdline, sizeof(cmdline), "edit %s", pm->data);
+	do_cmdline_cmd((char_u *) cmdline);
+    }
+
+    /* goto addr */
+    addr = plumblookup(pm->attr, "addr");
+    if(addr != nil) {
+        snprint(cmdline, sizeof(cmdline), "%s", addr);
+	do_cmdline_cmd((char_u *) cmdline);
+    }
+}
+
 int RealWaitForChar(int, long msec, int*) {
+    Event e;
+    int evid;
     Rune rune;
     char utf[UTFmax];
     int len;
@@ -645,8 +679,23 @@ int RealWaitForChar(int, long msec, int*) {
         interruptable = 1;
         _ALARM((unsigned long)msec);
     }
+
+    evid = event(&e);
+    switch(evid) {
+    case Ekeyboard:
+	rune = e.kbdc;
+	break;
+    case Emouse:
+	rune = 0;
+	break;
+    case Eplumb:
+	rune = 0;
+	plumbshow(e.v);
+	plumbfree(e.v);
+	break;
+    }
     /* TODO garbage collect */
-    rune = ekbd();
+    //rune = ekbd();
     if (msec > 0) {
         _ALARM(0);
         interruptable = 0;
@@ -655,6 +704,11 @@ int RealWaitForChar(int, long msec, int*) {
 	got_int = TRUE;
 	return 0;
     }
+
+    /* make sure we don't try to input empty runes */
+    if (rune == 0)
+	return 0;
+
     len = runetochar(utf, &rune);
     add_to_input_buf_csi((char_u*)utf, len); /* TODO escape K_SPECIAL? */
     return len > 0;
@@ -918,6 +972,7 @@ static void scr_init(void) {
 
     /* Mouse events must be enabled to receive window resizes. */
     einit(Emouse | Ekeyboard);
+    eplumb(Eplumb, "edit");
     scr_inited = TRUE;
 }
 
@@ -1133,6 +1188,7 @@ int mch_call_shell(char_u *cmd, int options) {
     return status;
 }
 
+/* wouldn't build on 9front without this.. */
 void
 setmalloctag(void *, ulong)
 {
